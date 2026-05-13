@@ -185,22 +185,19 @@ footer{margin-top:30px;border-top:1px solid var(--ink);padding-top:14px;
     <div class="card-head">
       <div>
         <h2 id="trend-title">Summonses over time</h2>
-        <div class="sub" id="trend-sub">Monthly · YTD comparison</div>
+        <div class="sub" id="trend-sub">Cumulative year-to-date</div>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <div class="pill-toggle" id="trend-period-toggle">
-          <button data-period="monthly" class="active">Monthly</button>
-          <button data-period="quarterly">Quarterly</button>
+          <button data-period="ytd" class="active">YTD</button>
+          <button data-period="monthly">Monthly</button>
           <button data-period="annual">Annual</button>
-        </div>
-        <div class="pill-toggle" id="trend-mode-toggle">
-          <button data-mode="ytd" class="active">YTD</button>
-          <button data-mode="full">Full series</button>
+          <button data-period="quarterly">Quarterly</button>
         </div>
       </div>
     </div>
     <div class="legend" id="trend-legend"></div>
-    <div class="chart-wrap"><svg id="trend-chart" class="chart" viewBox="0 0 800 320" preserveAspectRatio="xMinYMin meet"></svg></div>
+    <div class="chart-wrap"><svg id="trend-chart" class="chart" viewBox="0 0 800 340" preserveAspectRatio="xMinYMin meet"></svg></div>
   </div>
 
   <!-- Borough chart + Category breakdown side by side -->
@@ -294,8 +291,7 @@ const state = {
   offense: "All offenses",
   year: null,
   cmpYear: null,
-  trendPeriod: "monthly",   // monthly | quarterly | annual
-  trendMode: "ytd",         // ytd | full
+  trendPeriod: "ytd",      // ytd | monthly | quarterly | annual
   boroRate: "count",        // count | per100k
   moversGrain: "category",  // category | offense
   moversMode: "pct",        // pct | abs
@@ -306,33 +302,70 @@ let catColorMap = {};  // category -> color (per dataset)
 
 const fmt = n => (n == null) ? "—" : Math.round(n).toLocaleString("en-US");
 const pct = n => (n == null || !isFinite(n)) ? "—" : (n>=0?"+":"") + n.toFixed(1) + "%";
-// Compound words common in NYC summons data that lack spaces (e.g. "ADMINCODE", "PARKSRULE")
-const COMPOUND_SPLITS = {
-  "ADMINCODE":   "Admin Code",
-  "PARKSRULE":   "Parks Rule",
-  "PARKSRULES":  "Parks Rules",
-  "TRAFFICRULE": "Traffic Rule",
-  "TRAFFICRULES":"Traffic Rules",
-  "HEALTHCODE":  "Health Code",
-  "PENALLAW":    "Penal Law",
-  "OTHERABC":    "Other ABC",
-  "ABC":         "ABC",
-  "VTL":         "VTL",
-  "DWI":         "DWI",
-  "NYC":         "NYC",
+// Category/offense display-name map. Keys are the raw UPPERCASE values from the data.
+// Override anything here to get a clean, plain-English label.
+const DISPLAY_NAMES = {
+  // ── Criminal court summons categories (SUMMONS_CATEGORY_TYPE) ──
+  "ALCOHOL":             "Alcohol",
+  "MARIJUANA":           "Marijuana",
+  "TRESPASS":            "Trespass",
+  "DISORDERLY CONDUCT":  "Disorderly conduct",
+  "THEFT OF SERVICES":   "Theft of services (fare evasion)",
+  "VTL":                 "Vehicle & traffic law",
+  "OTHER ABC":           "Other alcohol-related",
+  "PARKS":               "Parks rules",
+  "TRANSIT":             "Transit rules",
+  "OTHER TRANSIT REG":   "Other transit rules",
+  "HEALTH CODE":         "Health code",
+  "HEALTHCODE":          "Health code",
+  "LOITERING":           "Loitering",
+  "GAMBLING":            "Gambling",
+  "PROSTITUTION":        "Prostitution",
+  "WEAPONS":             "Weapons",
+  "DRUG":                "Drugs (non-marijuana)",
+  "ASSAULT":             "Assault",
+  "OTHER":               "Other",
+
+  // ── OATH categories (LAW_TYPE) ──
+  "ADMINCODE":           "NYC Admin Code",
+  "PARKSRULE":           "Parks rules",
+  "PARKSRULES":          "Parks rules",
+  "TRAFFICRULE":         "Traffic rules",
+  "TRAFFICRULES":        "Traffic rules",
+  "PENALLAW":            "Penal law",
+
+  // ── OATH Admin Code sub-buckets (we create these in the Python script) ──
+  "ADMIN: OPEN CONTAINER":          "Open container",
+  "ADMIN: PUBLIC URINATION":        "Public urination",
+  "ADMIN: UNREASONABLE NOISE":      "Unreasonable noise",
+  "ADMIN: UNLICENSED VENDING":      "Unlicensed vending",
+  "ADMIN: SMOKING":                 "Smoking (prohibited area)",
+  "ADMIN: BICYCLE ON SIDEWALK":     "Bicycle on sidewalk",
+  "ADMIN: LITTER":                  "Litter",
+  "ADMIN: SPITTING":                "Spitting",
+  "ADMIN: OTHER":                   "Other Admin Code",
+
+  // ── Null-marker ──
+  "(NULL)":              "Uncategorized",
+  "UNCATEGORIZED":       "Uncategorized",
 };
+
+// Acronyms that should stay uppercase when we fall through to default casing.
+const ACRONYMS = new Set(["NYC","VTL","DWI","ABC","OATH","NYPD","DOH","DSNY","DOT","DOB","MTA"]);
+
 const titleCase = s => {
   if(!s) return "";
   const raw = String(s).trim();
   const upper = raw.toUpperCase();
-  if(COMPOUND_SPLITS[upper]) return COMPOUND_SPLITS[upper];
-  // Otherwise title-case word by word, preserving known acronyms
+  if(DISPLAY_NAMES[upper]) return DISPLAY_NAMES[upper];
+  // Default: title-case word by word, but preserve known acronyms and short codes
   return raw.toLowerCase().split(/\s+/).map(w => {
     const u = w.toUpperCase();
-    if(COMPOUND_SPLITS[u]) return COMPOUND_SPLITS[u];
+    if(ACRONYMS.has(u)) return u;
+    // Words like "1180D", "405b1" stay as-is uppercased
+    if(/^[a-z0-9]+$/i.test(w) && /\d/.test(w)) return u;
     return w.charAt(0).toUpperCase() + w.slice(1);
-  }).join(" ")
-   .replace(/\bNyc\b/g,"NYC").replace(/\bVtl\b/g,"VTL").replace(/\bDwi\b/g,"DWI").replace(/\bAbc\b/g,"ABC");
+  }).join(" ");
 };
 
 /* ───── Boot ───── */
@@ -517,7 +550,6 @@ function wireControls(){
   document.getElementById("cmp-sel").addEventListener("change", e => { state.cmpYear = +e.target.value; render(); });
 
   pillWire("trend-period-toggle", "period",     v => { state.trendPeriod = v; render(); });
-  pillWire("trend-mode-toggle",   "mode",       v => { state.trendMode   = v; render(); });
   pillWire("boro-rate-toggle",    "rate",       v => { state.boroRate    = v; render(); });
   pillWire("movers-grain-toggle", "grain",      v => { state.moversGrain = v; render(); });
   pillWire("movers-mode-toggle",  "moversmode", v => { state.moversMode  = v; render(); });
@@ -602,40 +634,85 @@ function kpi(label, val, delta, sub){
 /* ───── Trend chart ───── */
 function renderTrend(){
   const svg = document.getElementById("trend-chart");
-  const period = state.trendPeriod;          // monthly | quarterly | annual
-  const mode   = state.trendMode;            // ytd | full
+  const period = state.trendPeriod;  // ytd | monthly | quarterly | annual
 
-  // Build the series
   const d = DATA.datasets[state.ds];
   const years = d.years.slice().sort((a,b)=>a-b);
   const { month: latestMo } = latestYearMonth();
 
-  // Two series: current year vs comparison year (for monthly/quarterly)
-  // Or one series across all years (for annual)
   let series, xLabels, title, sub;
 
-  if(period === "annual"){
-    const pts = years.map(y => ({ x: y, v: sumFiltered({year:y}) }));
-    // For partial current year, also show YTD-comparable bar
-    const ymax = years[years.length-1];
-    if(mode === "ytd"){
-      // Replace last point's value with YTD through latestMo
-      const last = pts[pts.length-1];
-      last.v = ytdThroughMonth(ymax, latestMo);
-      last.partial = true;
+  if(period === "ytd"){
+    // ── Cumulative YTD: one line per year, climbing month-by-month ──
+    // Current year in magenta; comparison year in cerulean; others as thin gray context.
+    // Prior-year lines run full 12 months but dim after month=latestMo (apples-to-apples region).
+    xLabels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const cumFor = (yr, capMonth=12) => {
+      const pts = [];
+      let acc = 0;
+      let hasData = false;
+      for(let m=1; m<=capMonth; m++){
+        const v = sumFiltered({year:yr, month:m});
+        if(v > 0 || hasData) {  // start once we have any data
+          hasData = true;
+          acc += v;
+          pts.push({x:m-1, v:acc});
+        } else {
+          pts.push({x:m-1, v:null});
+        }
+      }
+      return pts;
+    };
+
+    series = [];
+    // Older prior years as gray context lines
+    years.forEach(yr => {
+      if(yr === state.year || yr === state.cmpYear) return;
+      const pts = cumFor(yr, 12);
+      // For these, split into "solid up to latestMo" + "dim after"
+      const solidPts = pts.map((p,i) => i <= latestMo-1 ? p : {x:i, v:null});
+      const fadePts  = pts.map((p,i) => i >= latestMo-1 ? p : {x:i, v:null});
+      series.push({ name:String(yr), color:"#cccccc", pts:solidPts, kind:"line", width:1.2 });
+      series.push({ name:"",         color:"#e8e8e8", pts:fadePts,  kind:"line", width:1.2 });
+    });
+    // Comparison year (cerulean) — solid up to latestMo, dimmed thereafter
+    const cmpPts = cumFor(state.cmpYear, 12);
+    const cmpSolid = cmpPts.map((p,i) => i <= latestMo-1 ? p : {x:i, v:null});
+    const cmpFade  = cmpPts.map((p,i) => i >= latestMo-1 ? p : {x:i, v:null});
+    series.push({ name:`${state.cmpYear}`, color:"var(--compare)", pts:cmpSolid, kind:"line", width:2.4 });
+    series.push({ name:"",                 color:"#a8c8e0",        pts:cmpFade,  kind:"line", width:2.4, dashed:true });
+    // Current year (magenta) — stops at latestMo (no future data to fade)
+    const curPts = cumFor(state.year, latestMo);
+    // Pad to 12 with nulls
+    const curPadded = [];
+    for(let m=0; m<12; m++){
+      curPadded.push(m < latestMo ? curPts[m] : {x:m, v:null});
     }
+    series.push({ name:`${state.year}`, color:"var(--focal)", pts:curPadded, kind:"line", width:3 });
+
+    title = `Cumulative year-to-date summonses`;
+    sub = `Each line shows summonses accumulated Jan-to-Dec, by year · ${filtersBlurb()}`;
+  }
+  else if(period === "annual"){
+    const pts = years.map(y => ({ x: y, v: sumFiltered({year:y}) }));
+    // For partial current year, mark it
+    const ymax = years[years.length-1];
+    const last = pts[pts.length-1];
+    last.v = ytdThroughMonth(ymax, latestMo);
+    last.partial = true;
     series = [{ name: "Total", color: "var(--focal)", pts, kind:"bars" }];
     xLabels = years.map(String);
     title = `Annual summonses`;
-    sub = mode === "ytd" ? `Last bar is YTD through ${monthName(latestMo)}` : `Through full year`;
+    sub = `Last bar is YTD through ${monthName(latestMo)} (partial year) · ${filtersBlurb()}`;
   } else {
-    // monthly or quarterly — two series (cur vs cmp)
+    // monthly or quarterly — two series (cur vs cmp), full year context
     const nBuckets = period === "monthly" ? 12 : 4;
     const bucketSize = period === "monthly" ? 1 : 3;
     const labels = period === "monthly"
       ? ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
       : ["Q1","Q2","Q3","Q4"];
     xLabels = labels;
+    const ymax = Math.max(state.year, state.cmpYear);
     const ptsFor = (yr) => {
       const arr = [];
       for(let i=0; i<nBuckets; i++){
@@ -644,8 +721,7 @@ function renderTrend(){
           const m = i*bucketSize + k + 1;
           v += sumFiltered({year:yr, month:m});
         }
-        // Only count YTD-equivalent buckets in YTD mode for partial year
-        if(mode === "ytd" && yr === Math.max(state.year, state.cmpYear)){
+        if(yr === ymax){
           const endMo = (i+1)*bucketSize;
           if(endMo > latestMo){ arr.push({x:i, v:null, partial:true}); continue; }
         }
@@ -654,20 +730,21 @@ function renderTrend(){
       return arr;
     };
     series = [
-      { name: `${state.year}`,    color: "var(--focal)",   pts: ptsFor(state.year),    kind:"line" },
-      { name: `${state.cmpYear}`, color: "var(--compare)", pts: ptsFor(state.cmpYear), kind:"line" },
+      { name: `${state.year}`,    color: "var(--focal)",   pts: ptsFor(state.year),    kind:"line", width:2.4 },
+      { name: `${state.cmpYear}`, color: "var(--compare)", pts: ptsFor(state.cmpYear), kind:"line", width:2.4 },
     ];
     title = `${period === "monthly" ? "Monthly" : "Quarterly"} summonses, ${state.year} vs ${state.cmpYear}`;
-    sub = mode === "ytd" ? `YTD through ${monthName(latestMo)}` : `Full year`;
+    sub = `Filtered to: ${filtersBlurb()}`;
   }
 
   document.getElementById("trend-title").textContent = title;
-  document.getElementById("trend-sub").textContent = `${sub} · ${filtersBlurb()}`;
+  document.getElementById("trend-sub").textContent = sub;
 
-  // Render legend
-  document.getElementById("trend-legend").innerHTML = series.map(s =>
-    `<div class="item"><span class="swatch" style="background:${s.color}"></span>${s.name}</div>`
-  ).join("");
+  // Legend: show only the named series (skip the empty-name fade-only entries)
+  document.getElementById("trend-legend").innerHTML = series
+    .filter(s => s.name)
+    .map(s => `<div class="item"><span class="swatch" style="background:${s.color}"></span>${s.name}</div>`)
+    .join("");
 
   drawLineOrBars(svg, series, xLabels);
 }
@@ -685,7 +762,7 @@ function filtersBlurb(){
 /* SVG line/bar drawing — minimal but on-brand */
 function drawLineOrBars(svg, series, xLabels){
   while(svg.firstChild) svg.removeChild(svg.firstChild);
-  const W = 800, H = 320, P = {t:18, r:18, b:38, l:54};
+  const W = 800, H = 340, P = {t:18, r:18, b:38, l:64};
   const innerW = W - P.l - P.r;
   const innerH = H - P.t - P.b;
   const N = xLabels.length;
@@ -730,12 +807,21 @@ function drawLineOrBars(svg, series, xLabels){
       const valid = s.pts.map((p,i) => p.v == null ? null : [xScale(i), yScale(p.v)]).filter(Boolean);
       if(valid.length){
         const dStr = valid.map((pt,i) => (i===0?"M":"L") + pt[0] + " " + pt[1]).join(" ");
-        path(svg, dStr, {stroke:s.color, fill:"none", "stroke-width":2.2, "stroke-linejoin":"round"});
+        const strokeAttrs = {
+          stroke: s.color, fill:"none",
+          "stroke-width": s.width || 2.2,
+          "stroke-linejoin":"round", "stroke-linecap":"round"
+        };
+        if(s.dashed) strokeAttrs["stroke-dasharray"] = "3,3";
+        path(svg, dStr, strokeAttrs);
       }
-      s.pts.forEach((p,i) => {
-        if(p.v == null) return;
-        circle(svg, xScale(i), yScale(p.v), 3, {fill:s.color, stroke:"#fff", "stroke-width":1.5});
-      });
+      // Only draw point markers on the primary (named) series, not the fade-only twins
+      if(s.name){
+        s.pts.forEach((p,i) => {
+          if(p.v == null) return;
+          circle(svg, xScale(i), yScale(p.v), 3, {fill:s.color, stroke:"#fff", "stroke-width":1.5});
+        });
+      }
     }
   });
 }
@@ -841,8 +927,13 @@ function renderMovers(){
   });
 
   // Filter & compute deltas
-  const minVol = 10;
+  // Drop "Uncategorized"/(null) entries — they're data-quality artifacts, not real changes
+  const NULL_KEYS = new Set(["(NULL)", "UNCATEGORIZED", "", "NULL"]);
+  const minVol = 10;       // minimum volume to appear at all
+  const minPriorPct = 100; // minimum prior-year volume for % change ranking (suppresses tiny-base noise)
   const rowsClean = rows
+    .filter(r => !NULL_KEYS.has(String(r.key).toUpperCase()))
+    .filter(r => !(r.parentCat && NULL_KEYS.has(String(r.parentCat).toUpperCase())))
     .filter(r => r.cur >= minVol || r.prv >= minVol)
     .map(r => {
       const absChg = r.cur - r.prv;
@@ -853,12 +944,16 @@ function renderMovers(){
     .filter(r => r.pctChg != null);
 
   const sortKey = state.moversMode === "abs" ? "absChg" : "pctChg";
-  // Increases must actually have increased; decreases must actually have decreased.
-  const ups = rowsClean
+  // For % change ranking, require a meaningful prior-year base to suppress noise
+  const filterForRanking = state.moversMode === "abs"
+    ? (r => true)
+    : (r => r.prv >= minPriorPct);
+  const eligible = rowsClean.filter(filterForRanking);
+  const ups = eligible
     .filter(r => r[sortKey] > 0)
     .sort((a,b) => b[sortKey] - a[sortKey])
     .slice(0, 10);
-  const downs = rowsClean
+  const downs = eligible
     .filter(r => r[sortKey] < 0)
     .sort((a,b) => a[sortKey] - b[sortKey])
     .slice(0, 10);
@@ -867,8 +962,11 @@ function renderMovers(){
   const grainStr = state.moversGrain === "category" ? "Categories" : "Specific offenses";
   document.getElementById("movers-up-title").textContent = `▲ Top 10 increases · ${state.year} vs ${state.cmpYear} · ${geo}`;
   document.getElementById("movers-down-title").textContent = `▼ Top 10 decreases · ${state.year} vs ${state.cmpYear} · ${geo}`;
+  const noteSuffix = state.moversMode === "abs"
+    ? `Minimum ${minVol} in either year`
+    : `Minimum ${minPriorPct} in the prior year (to avoid noise from tiny bases)`;
   document.getElementById("movers-sub").textContent =
-    `${grainStr} with the biggest year-over-year change · ${state.moversMode === "abs" ? "Ranked by absolute change" : "Ranked by percent change"} · Minimum ${minVol} in either year`;
+    `${grainStr} with the biggest year-over-year change · ${state.moversMode === "abs" ? "Ranked by absolute change" : "Ranked by percent change"} · ${noteSuffix}`;
 
   renderMoverList("movers-up-list", ups);
   renderMoverList("movers-down-list", downs);
