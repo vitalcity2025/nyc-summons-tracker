@@ -38,5 +38,11 @@ jobs:
             echo "No data changes."
           else
             git commit -m "data: refresh summons_data.json [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
-            git push
+            # If main moved ahead while we were running, rebase our commit on top
+            # and try again. Retry a couple of times in case of concurrent activity.
+            for i in 1 2 3; do
+              git pull --rebase origin main && git push && break
+              echo "push attempt $i failed, retrying..."
+              sleep 5
+            done
           fi
