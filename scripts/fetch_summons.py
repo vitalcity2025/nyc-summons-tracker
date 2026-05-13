@@ -46,8 +46,13 @@ SOCRATA_BASE = "https://data.cityofnewyork.us/resource/{}.json"
 START_YEAR = 2018
 CURRENT_YEAR = datetime.now().year
 
+# ──────────────────────────────────────────────────────────────────────────────
 # B-summons violation code lookup (most common codes).
+# Source: NYS VTL and NYC Admin Code. Codes are normalized to uppercase, no spaces.
+# Anything not in this map falls into "Other Moving Violations".
+# ──────────────────────────────────────────────────────────────────────────────
 B_CODE_DESCRIPTIONS = {
+    # Speeding
     "1180A": ("Speeding", "Speeding (basic rule)"),
     "1180B": ("Speeding", "Speeding (state highway)"),
     "1180C": ("Speeding", "Speeding (school zone)"),
@@ -58,21 +63,26 @@ B_CODE_DESCRIPTIONS = {
     "1180E": ("Speeding", "Speeding (work zone)"),
     "1180F": ("Speeding", "Speeding (school zone)"),
     "1180G": ("Speeding", "Speeding (>55 zone)"),
+    # Traffic signals
     "1110A": ("Disobey traffic device", "Failure to obey traffic-control device"),
     "1110B": ("Disobey traffic device", "Failure to obey traffic-control device"),
     "1111A1": ("Red light", "Failure to stop at red signal"),
     "1111D1": ("Red light", "Failure to stop at red signal"),
     "1111D2A": ("Red light", "Failure to stop at red signal"),
+    # Cell phone / electronic device
     "1225C": ("Cell phone / device", "Use of mobile phone"),
     "1225C2A": ("Cell phone / device", "Use of mobile phone"),
     "1225D": ("Cell phone / device", "Use of portable electronic device"),
     "1225D1": ("Cell phone / device", "Use of portable electronic device"),
+    # Seatbelt / child restraint
     "1229C": ("Seatbelt / child restraint", "Seatbelt violation"),
     "1229C1": ("Seatbelt / child restraint", "Driver seatbelt"),
     "1229C2": ("Seatbelt / child restraint", "Passenger seatbelt"),
     "1229C3": ("Seatbelt / child restraint", "Child restraint"),
     "1229C3A": ("Seatbelt / child restraint", "Child restraint"),
+    # Stop signs
     "1172A": ("Stop sign", "Failure to stop at stop sign"),
+    # Turning / signals
     "1163A": ("Improper turn / signal", "Improper signal"),
     "1163B": ("Improper turn / signal", "Improper signal"),
     "1163D": ("Improper turn / signal", "Improper signal"),
@@ -80,27 +90,35 @@ B_CODE_DESCRIPTIONS = {
     "1160B": ("Improper turn / signal", "Improper turn"),
     "1160C": ("Improper turn / signal", "Improper turn"),
     "1160D": ("Improper turn / signal", "Improper turn"),
+    # Following / passing
     "1129A": ("Following / passing", "Following too closely"),
     "1122": ("Following / passing", "Passing"),
     "1122A": ("Following / passing", "Passing"),
+    # Lane use
     "1128A": ("Lane use", "Moved from lane unsafely"),
     "1128B": ("Lane use", "Moved from lane unsafely"),
     "1128D": ("Lane use", "Moved from lane unsafely"),
+    # Reckless / aggressive
     "1212": ("Reckless driving", "Reckless driving"),
+    # Unlicensed / suspended
     "509": ("License violation", "Operating without a license"),
     "5091": ("License violation", "Unlicensed operator"),
     "511": ("License violation", "Aggravated unlicensed operation"),
     "5111": ("License violation", "AUO 3rd degree"),
     "512": ("License violation", "Operating with suspended registration"),
+    # Registration / inspection
     "401": ("Registration / inspection", "Unregistered vehicle"),
     "4011": ("Registration / inspection", "Unregistered vehicle"),
     "4011A": ("Registration / inspection", "Unregistered vehicle"),
     "402": ("Registration / inspection", "Plate violation"),
     "306B": ("Registration / inspection", "Uninspected vehicle"),
+    # Pedestrian / crosswalk
     "1146A": ("Failure to yield to pedestrian", "Failure to yield right-of-way to pedestrian"),
     "1151A": ("Failure to yield to pedestrian", "Failure to yield right-of-way in crosswalk"),
+    # Insurance
     "319": ("No insurance", "Operating without insurance"),
     "3191": ("No insurance", "Operating without insurance"),
+    # NYC Admin / Traffic Rules (NYC codes)
     "405B1": ("NYC: Parking / standing", "Parking / standing rule"),
     "406A1": ("NYC: Parking / standing", "Parking / standing rule"),
     "37512A1": ("NYC: Truck route", "Truck route violation"),
@@ -109,17 +127,54 @@ B_CODE_DESCRIPTIONS = {
 }
 
 def b_category(law_cd, code):
+    """Return (category, description) for a B-summons row."""
     if not code:
         return ("Other moving violations", "Unknown")
     key = str(code).strip().upper().replace(" ", "").replace(".", "")
     if key in B_CODE_DESCRIPTIONS:
         return B_CODE_DESCRIPTIONS[key]
+    # Try without trailing letter
     if len(key) > 1 and key[-1].isalpha() and key[:-1] in B_CODE_DESCRIPTIONS:
         return B_CODE_DESCRIPTIONS[key[:-1]]
     return ("Other moving violations", f"{law_cd or '?'} {code}")
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# OATH Admin Code conduct buckets.
+# OATH categorizes by law source (ADMINCODE, HEALTHCODE, etc.), which lumps very
+# different offenses under ADMINCODE. We split ADMINCODE into conduct-based
+# sub-buckets by matching keywords in the offense description (LAW_DESC).
+# Order matters — first match wins.
+# ──────────────────────────────────────────────────────────────────────────────
+ADMIN_CODE_BUCKETS = [
+    # (bucket_label, list of keyword fragments to match in offense description)
+    ("ADMIN: OPEN CONTAINER",      ["ALCOHOLIC BEVERAG", "OPEN CONTAINER", "UNLAWFUL CONSUMPTION"]),
+    ("ADMIN: PUBLIC URINATION",    ["URINAT"]),
+    ("ADMIN: UNREASONABLE NOISE",  ["NOISE", "UNREASONABLE"]),
+    ("ADMIN: UNLICENSED VENDING",  ["VENDING", "VENDOR", "PEDDLER"]),
+    ("ADMIN: SMOKING",             ["SMOK"]),
+    ("ADMIN: BICYCLE ON SIDEWALK", ["BICYCLE", "BIKE"]),
+    ("ADMIN: LITTER",              ["LITTER", "LITTERING", "DEBRIS"]),
+    ("ADMIN: SPITTING",            ["SPIT"]),
+]
+
+def split_admin_code(category, offense):
+    """If category is ADMINCODE, return a more specific bucket based on offense text."""
+    if not category or category.upper() != "ADMINCODE":
+        return category
+    off = (offense or "").upper()
+    for bucket, kws in ADMIN_CODE_BUCKETS:
+        for kw in kws:
+            if kw in off:
+                return bucket
+    return "ADMIN: OTHER"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Socrata helpers
+# ──────────────────────────────────────────────────────────────────────────────
 def soda_get(dataset_id, params, retries=4):
+    """Run a SoQL query against Socrata. Returns list of dicts."""
     url = SOCRATA_BASE.format(dataset_id) + "?" + urlencode(params)
     headers = {"User-Agent": "vital-city-summons-tracker"}
     if APP_TOKEN:
@@ -131,12 +186,13 @@ def soda_get(dataset_id, params, retries=4):
                 return json.loads(resp.read())
         except (HTTPError, URLError) as e:
             wait = 2 ** attempt
-            print(f"  [retry {attempt+1}/{retries}] {e} - sleeping {wait}s", file=sys.stderr)
+            print(f"  [retry {attempt+1}/{retries}] {e} — sleeping {wait}s", file=sys.stderr)
             time.sleep(wait)
     raise RuntimeError(f"Failed to fetch {url}")
 
 
 def norm_boro(s):
+    """Normalize borough strings to Title Case."""
     if not s:
         return "Unknown"
     s = s.strip().upper()
@@ -154,12 +210,14 @@ def norm_boro(s):
 
 
 def precinct_to_boro(p):
+    """Fallback: NYC precinct number to borough."""
     if p is None or p == "":
         return "Unknown"
     try:
         n = int(p)
     except (ValueError, TypeError):
         return "Unknown"
+    # Standard NYPD precinct ranges
     if 1 <= n <= 34:
         return "Manhattan"
     if 40 <= n <= 52:
@@ -173,9 +231,14 @@ def precinct_to_boro(p):
     return "Unknown"
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Dataset 1: NYPD Criminal Court Summons (historic + YTD)
+# ──────────────────────────────────────────────────────────────────────────────
 def fetch_criminal_court():
     print("\n=== NYPD Criminal Court Summons ===")
     out = []
+    # Historic (sv2w-rv3k): 2006 through last full year. SUMMONS_DATE format.
+    # We use floating_timestamp filtering by year extraction.
     for ds_id, label in [("sv2w-rv3k", "historic"), ("mv4k-y93f", "ytd")]:
         print(f"  Fetching {label} ({ds_id})...")
         params = {
@@ -207,10 +270,15 @@ def fetch_criminal_court():
                 pct = int(pct)
             except (ValueError, TypeError):
                 pct = None
+            # Fallback boro from precinct
             if boro == "Unknown" and pct is not None:
                 boro = precinct_to_boro(pct)
-            cat = (r.get("category") or "OTHER").strip().upper() or "OTHER"
-            offense = (r.get("offense") or "UNKNOWN").strip().upper() or "UNKNOWN"
+            cat = (r.get("category") or "").strip().upper()
+            if cat in ("", "NULL", "(NULL)", "NONE"):
+                cat = "UNCATEGORIZED"
+            offense = (r.get("offense") or "").strip().upper()
+            if offense in ("", "NULL", "(NULL)", "NONE"):
+                offense = "UNKNOWN"
             out.append({
                 "year": yr, "month": mo, "boro": boro, "precinct": pct,
                 "category": cat, "offense": offense, "n": n,
@@ -218,6 +286,9 @@ def fetch_criminal_court():
     return out
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Dataset 2: NYPD OATH Summons
+# ──────────────────────────────────────────────────────────────────────────────
 def fetch_oath():
     print("\n=== NYPD OATH Summons ===")
     ds_id = "hxbk-grd3"
@@ -254,8 +325,14 @@ def fetch_oath():
             pct = None
         if boro == "Unknown" and pct is not None:
             boro = precinct_to_boro(pct)
-        cat = (r.get("category") or "OTHER").strip().upper() or "OTHER"
-        offense = (r.get("offense") or "UNKNOWN").strip().upper() or "UNKNOWN"
+        cat = (r.get("category") or "").strip().upper()
+        if cat in ("", "NULL", "(NULL)", "NONE"):
+            cat = "UNCATEGORIZED"
+        offense = (r.get("offense") or "").strip().upper()
+        if offense in ("", "NULL", "(NULL)", "NONE"):
+            offense = "UNKNOWN"
+        # Split ADMINCODE into conduct-based buckets for clearer dashboard display
+        cat = split_admin_code(cat, offense)
         out.append({
             "year": yr, "month": mo, "boro": boro, "precinct": pct,
             "category": cat, "offense": offense, "n": n,
@@ -263,6 +340,9 @@ def fetch_oath():
     return out
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Dataset 3: NYPD B Summons (Moving Violations)
+# ──────────────────────────────────────────────────────────────────────────────
 def fetch_b_summons():
     print("\n=== NYPD B Summons (Moving Violations) ===")
     out = []
@@ -307,14 +387,23 @@ def fetch_b_summons():
     return out
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Compaction: collapse the long lists into nested counts for the dashboard
+# ──────────────────────────────────────────────────────────────────────────────
 def compact(rows):
-    counts = {}
-    pct_counts = {}
-    categories = {}
+    """
+    Produce a structure the dashboard can slice quickly:
+      counts[year][month][boro][category][offense] = n
+      precinct_counts[year][month][precinct][category][offense] = n
+    Plus pre-computed totals at each level.
+    """
+    counts = {}             # by boro
+    pct_counts = {}         # by precinct
+    categories = {}         # category -> set of offenses
     boros = set()
     precincts = set()
     years = set()
-    months_seen = {}
+    months_seen = {}        # year -> set(months)
 
     for r in rows:
         y, m = r["year"], r["month"]
@@ -331,8 +420,10 @@ def compact(rows):
             precincts.add(pct)
         categories.setdefault(cat, set()).add(off)
 
+        # By boro
         d = counts.setdefault(y, {}).setdefault(m, {}).setdefault(boro, {}).setdefault(cat, {})
         d[off] = d.get(off, 0) + n
+        # By precinct
         if pct is not None:
             d2 = pct_counts.setdefault(y, {}).setdefault(m, {}).setdefault(pct, {}).setdefault(cat, {})
             d2[off] = d2.get(off, 0) + n
