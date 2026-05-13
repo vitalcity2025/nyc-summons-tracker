@@ -121,10 +121,25 @@ footer{margin-top:30px;border-top:1px solid var(--ink);padding-top:14px;
 .error{padding:18px;background:#fdebee;border:1px solid #fc365e;color:#7a0f24;font-size:13px;margin:20px 0}
 
 /* Tooltips */
-.tooltip{position:absolute;background:var(--ink);color:#fff;padding:8px 10px;
-  font-size:11px;pointer-events:none;opacity:0;transition:opacity .12s;
-  z-index:50;max-width:240px;line-height:1.4}
+.tooltip{position:absolute;background:var(--ink);color:#fff;padding:8px 11px;
+  font-size:11px;pointer-events:none;opacity:0;transition:opacity .08s;
+  z-index:50;max-width:260px;line-height:1.45;
+  font-family:"halyard-text",sans-serif;font-weight:300;
+  box-shadow:0 4px 12px rgba(0,0,0,.18);
+  transform:translate(-50%, -100%);  /* anchor above-and-centered on the point */
+  margin-top:-10px;
+}
+.tooltip .t-label{font-size:10px;letter-spacing:.04em;text-transform:uppercase;
+  color:#bdbdbd;font-weight:700;margin-bottom:2px}
+.tooltip .t-val{font-family:"halyard-text",sans-serif;font-weight:900;font-size:16px;color:#fff}
+.tooltip .t-cmp{font-size:11px;margin-top:3px;color:#bdbdbd}
+.tooltip .t-cmp .up{color:#fc8e92;font-weight:700}
+.tooltip .t-cmp .down{color:#a3d490;font-weight:700}
+.tooltip .t-cmp .flat{color:#999}
 .tooltip strong{font-weight:900}
+
+/* Hover target rectangles/circles need pointer events even when transparent */
+.chart .hot{cursor:pointer}
 </style>
 </head>
 <body>
@@ -302,6 +317,30 @@ let catColorMap = {};  // category -> color (per dataset)
 
 const fmt = n => (n == null) ? "—" : Math.round(n).toLocaleString("en-US");
 const pct = n => (n == null || !isFinite(n)) ? "—" : (n>=0?"+":"") + n.toFixed(1) + "%";
+
+/* ───── Tooltip helpers ─────
+   Single shared tooltip element. Each hot-target on a chart calls tipShow on hover.
+   `cmp` is optional comparison object: { value, label }
+   `valueStr` overrides numeric formatting (e.g. "359.4 per 100k") */
+const tipEl = () => document.getElementById("tooltip");
+function tipShow(evt, {label, value, valueStr, cmp}){
+  const t = tipEl();
+  let cmpHtml = "";
+  if(cmp && cmp.value != null){
+    const diff = value - cmp.value;
+    const pctDiff = cmp.value > 0 ? (diff/cmp.value)*100 : (value > 0 ? null : 0);
+    const cls = pctDiff == null ? "flat" : (pctDiff > 0.5 ? "up" : (pctDiff < -0.5 ? "down" : "flat"));
+    const pctStr = pctDiff == null ? "n/a" : pct(pctDiff);
+    cmpHtml = `<div class="t-cmp"><span class="${cls}">${pctStr}</span> vs ${cmp.label} (${cmp.valueStr || fmt(cmp.value)})</div>`;
+  }
+  t.innerHTML = `<div class="t-label">${label || ""}</div>
+    <div class="t-val">${valueStr || fmt(value)}</div>
+    ${cmpHtml}`;
+  t.style.left = evt.pageX + "px";
+  t.style.top  = evt.pageY + "px";
+  t.style.opacity = "1";
+}
+function tipHide(){ tipEl().style.opacity = "0"; }
 // Category/offense display-name map. Keys are the raw UPPERCASE values from the data.
 // Override anything here to get a clean, plain-English label.
 const DISPLAY_NAMES = {
@@ -652,80 +691,98 @@ function renderTrend(){
     // ── Cumulative YTD: one line per year, climbing month-by-month ──
     // Current year in magenta; comparison year in cerulean; others as thin gray context.
     // Prior-year lines run full 12 months but dim after month=latestMo (apples-to-apples region).
-    xLabels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const moNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    xLabels = moNames;
     const cumFor = (yr, capMonth=12) => {
       const pts = [];
       let acc = 0;
       let hasData = false;
       for(let m=1; m<=capMonth; m++){
         const v = sumFiltered({year:yr, month:m});
-        if(v > 0 || hasData) {  // start once we have any data
+        if(v > 0 || hasData) {
           hasData = true;
           acc += v;
-          pts.push({x:m-1, v:acc});
+          pts.push({x:m-1, v:acc, year:yr, month:m, label:`Cumulative through ${moNames[m-1]} ${yr}`});
         } else {
-          pts.push({x:m-1, v:null});
+          pts.push({x:m-1, v:null, year:yr, month:m});
         }
       }
       return pts;
     };
 
     series = [];
-    // Older prior years as gray context lines
+    // Older prior years as gray context lines (solid up to latestMo, fade after)
+    // Also build a cumulative-by-year lookup so any line's tooltip can compare to prior year.
+    const cumByYear = {};
+    years.forEach(yr => { cumByYear[yr] = cumFor(yr, 12); });
+
+    const attachCmp = (pts, yr) => pts.map(p => {
+      if(p.v == null) return p;
+      const prv = cumByYear[yr-1];
+      const cmpVal = prv && prv[p.x] ? prv[p.x].v : null;
+      return {...p, cmp: cmpVal != null ? {value: cmpVal, label: `${moNames[p.x]} ${yr-1}`} : null};
+    });
+
     years.forEach(yr => {
       if(yr === state.year || yr === state.cmpYear) return;
-      const pts = cumFor(yr, 12);
-      // For these, split into "solid up to latestMo" + "dim after"
+      const pts = attachCmp(cumFor(yr, 12), yr);
       const solidPts = pts.map((p,i) => i <= latestMo-1 ? p : {x:i, v:null});
       const fadePts  = pts.map((p,i) => i >= latestMo-1 ? p : {x:i, v:null});
-      series.push({ name:String(yr), color:"#cccccc", pts:solidPts, kind:"line", width:1.2 });
+      series.push({ name:String(yr), color:"#cccccc", pts:solidPts, kind:"line", width:1.2, interactive:true });
       series.push({ name:"",         color:"#e8e8e8", pts:fadePts,  kind:"line", width:1.2 });
     });
     // Comparison year (cerulean) — solid up to latestMo, dimmed thereafter
-    const cmpPts = cumFor(state.cmpYear, 12);
-    const cmpSolid = cmpPts.map((p,i) => i <= latestMo-1 ? p : {x:i, v:null});
-    const cmpFade  = cmpPts.map((p,i) => i >= latestMo-1 ? p : {x:i, v:null});
-    series.push({ name:`${state.cmpYear}`, color:"var(--compare)", pts:cmpSolid, kind:"line", width:2.4 });
+    const cmpPtsArr = attachCmp(cumFor(state.cmpYear, 12), state.cmpYear);
+    const cmpSolid = cmpPtsArr.map((p,i) => i <= latestMo-1 ? p : {x:i, v:null});
+    const cmpFade  = cmpPtsArr.map((p,i) => i >= latestMo-1 ? p : {x:i, v:null});
+    series.push({ name:`${state.cmpYear}`, color:"var(--compare)", pts:cmpSolid, kind:"line", width:2.4, interactive:true });
     series.push({ name:"",                 color:"#a8c8e0",        pts:cmpFade,  kind:"line", width:2.4, dashed:true });
-    // Current year (magenta) — stops at latestMo (no future data to fade)
-    const curPts = cumFor(state.year, latestMo);
-    // Pad to 12 with nulls
+    // Current year (magenta) — stops at latestMo
+    const curPtsArr = attachCmp(cumFor(state.year, latestMo), state.year);
     const curPadded = [];
     for(let m=0; m<12; m++){
-      curPadded.push(m < latestMo ? curPts[m] : {x:m, v:null});
+      curPadded.push(m < latestMo ? curPtsArr[m] : {x:m, v:null});
     }
-    series.push({ name:`${state.year}`, color:"var(--focal)", pts:curPadded, kind:"line", width:3 });
+    series.push({ name:`${state.year}`, color:"var(--focal)", pts:curPadded, kind:"line", width:3, interactive:true });
 
     title = `Cumulative year-to-date summonses`;
     sub = `Each line shows summonses accumulated Jan-to-Dec, by year · ${filtersBlurb()}`;
   }
   else if(period === "annual"){
-    const pts = years.map(y => ({ x: y, v: sumFiltered({year:y}) }));
-    // For partial current year, mark it
+    const pts = years.map(y => ({ x: y, v: sumFiltered({year:y}), label: `${y}` }));
     const ymax = years[years.length-1];
     const last = pts[pts.length-1];
     last.v = ytdThroughMonth(ymax, latestMo);
     last.partial = true;
-    series = [{ name: "Total", color: "var(--focal)", pts, kind:"bars" }];
+    last.label = `${ymax} YTD (through ${monthName(latestMo)})`;
+    // Attach prior-year comparison
+    for(let i=0; i<pts.length; i++){
+      if(i === 0){ pts[i].cmp = null; continue; }
+      const prv = pts[i-1].v;
+      pts[i].cmp = prv != null ? {value: prv, label: pts[i-1].label} : null;
+    }
+    series = [{ name: "Total", color: "var(--focal)", pts, kind:"bars", interactive:true }];
     xLabels = years.map(String);
     title = `Annual summonses`;
     sub = `Last bar is YTD through ${monthName(latestMo)} (partial year) · ${filtersBlurb()}`;
   } else {
     // monthly or quarterly — continuous time series from earliest year through latest available month
-    const bucketSize = period === "monthly" ? 1 : 3;       // months per bucket
-    const bucketsPerYear = 12 / bucketSize;                // 12 monthly or 4 quarterly
+    const bucketSize = period === "monthly" ? 1 : 3;
+    const bucketsPerYear = 12 / bucketSize;
     const yMin = years[0];
     const yMax = years[years.length-1];
+    const moNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
     const pts = [];
-    const labelTicks = [];   // [{x, label}] for major (year) tick labels under the x-axis
+    const labelTicks = [];
     let xi = 0;
     for(let yr = yMin; yr <= yMax; yr++){
-      // Mark year-start position for tick labels
       labelTicks.push({ x: xi, label: String(yr) });
       for(let i = 0; i < bucketsPerYear; i++){
         let v = 0;
         let anyData = false;
+        const startMo = i*bucketSize + 1;
+        const endMo   = i*bucketSize + bucketSize;
         for(let k = 0; k < bucketSize; k++){
           const m = i*bucketSize + k + 1;
           if(yr > yMax || (yr === yMax && m > latestMo)) continue;
@@ -733,14 +790,23 @@ function renderTrend(){
           v += monthVal;
           anyData = true;
         }
-        pts.push({ x: xi, v: anyData ? v : null });
+        const label = period === "monthly"
+          ? `${moNames[i]} ${yr}`
+          : `Q${i+1} ${yr}`;
+        pts.push({ x: xi, v: anyData ? v : null, label, year: yr, bucket: i });
         xi++;
       }
     }
+    // Attach same-period-prior-year comparisons
+    for(let p of pts){
+      if(p.v == null){ p.cmp = null; continue; }
+      const prior = pts.find(q => q.year === p.year - 1 && q.bucket === p.bucket);
+      p.cmp = (prior && prior.v != null) ? {value: prior.v, label: prior.label} : null;
+    }
 
     series = [{ name: `${period === "monthly" ? "Monthly" : "Quarterly"} summonses`,
-                color: "var(--focal)", pts, kind: "line", width: 1.8 }];
-    xLabels = labelTicks;  // signal to drawer that these are sparse {x,label} ticks
+                color: "var(--focal)", pts, kind: "line", width: 1.8, interactive:true }];
+    xLabels = labelTicks;
     title = `${period === "monthly" ? "Monthly" : "Quarterly"} summonses, ${yMin}\u2013present`;
     sub = `Filtered to: ${filtersBlurb()}`;
   }
@@ -836,7 +902,20 @@ function drawLineOrBars(svg, series, xLabels){
         const x = xBarScale(i) - barW/2;
         const y = yScale(p.v);
         const h = (P.t+innerH) - y;
-        rect(svg, x, y, barW, h, {fill:s.color, opacity: p.partial ? 0.5 : 1});
+        const barRect = rect(svg, x, y, barW, h, {fill:s.color, opacity: p.partial ? 0.5 : 1});
+        if(s.interactive){
+          // Wider invisible hit target overlay, full-height of plot for easier hovering
+          const hitW = innerW / N;
+          const hot = rect(svg, xBarScale(i)-hitW/2, P.t, hitW, innerH,
+            {fill:"transparent", class:"hot", "pointer-events":"all"});
+          hot.addEventListener("mouseenter", e => tipShow(e, {
+            label: p.label || "", value: p.v, cmp: p.cmp
+          }));
+          hot.addEventListener("mousemove", e => tipShow(e, {
+            label: p.label || "", value: p.v, cmp: p.cmp
+          }));
+          hot.addEventListener("mouseleave", tipHide);
+        }
       });
     } else {
       // Line + points. Use point's own .x for positioning so we support sparse and irregular x's.
@@ -853,12 +932,28 @@ function drawLineOrBars(svg, series, xLabels){
         path(svg, dStr, strokeAttrs);
       }
       // Draw dot markers only on the primary (named) series, and only when there aren't too many points
-      // (suppresses visual clutter on the long continuous monthly chart)
       const showDots = s.name && s.pts.length <= 16;
       if(showDots){
         s.pts.forEach((p,i) => {
           if(p.v == null) return;
           circle(svg, xScale(xOf(p,i)), yScale(p.v), 3, {fill:s.color, stroke:"#fff", "stroke-width":1.5});
+        });
+      }
+      // Invisible hover targets on every point of interactive series — regardless of dot visibility
+      if(s.interactive){
+        s.pts.forEach((p,i) => {
+          if(p.v == null) return;
+          const cx = xScale(xOf(p,i));
+          const cy = yScale(p.v);
+          const hot = circle(svg, cx, cy, 9,
+            {fill:"transparent", class:"hot", "pointer-events":"all"});
+          hot.addEventListener("mouseenter", e => tipShow(e, {
+            label: p.label || s.name || "", value: p.v, cmp: p.cmp
+          }));
+          hot.addEventListener("mousemove", e => tipShow(e, {
+            label: p.label || s.name || "", value: p.v, cmp: p.cmp
+          }));
+          hot.addEventListener("mouseleave", tipHide);
         });
       }
     }
@@ -888,10 +983,10 @@ function renderBoro(){
     `<div class="item"><span class="swatch" style="background:var(--focal)"></span>${state.year}</div>
      <div class="item"><span class="swatch" style="background:var(--compare)"></span>${state.cmpYear}</div>`;
 
-  drawGroupedBars(svg, boros, cur, prv, useRate);
+  drawGroupedBars(svg, boros, cur, prv, useRate, state.year, state.cmpYear, latestMo);
 }
 
-function drawGroupedBars(svg, labels, curVals, prvVals, isRate){
+function drawGroupedBars(svg, labels, curVals, prvVals, isRate, curYr, cmpYr, latestMo){
   while(svg.firstChild) svg.removeChild(svg.firstChild);
   const W = 800, H = 260, P = {t:18, r:18, b:46, l:64};
   const innerW = W - P.l - P.r;
@@ -900,6 +995,7 @@ function drawGroupedBars(svg, labels, curVals, prvVals, isRate){
   const yMax = niceMax(Math.max(...curVals, ...prvVals, 1));
   const groupW = innerW / N;
   const barW = (groupW - 14) / 2;
+  const through = monthName(latestMo);
 
   // y grid
   niceTicks(yMax, 4).forEach(t => {
@@ -914,12 +1010,37 @@ function drawGroupedBars(svg, labels, curVals, prvVals, isRate){
     const gx = P.l + i*groupW + 7;
     const yC = P.t + innerH - (curVals[i]/yMax)*innerH;
     const yP = P.t + innerH - (prvVals[i]/yMax)*innerH;
-    rect(svg, gx,       yP, barW, P.t+innerH-yP, {fill:"var(--compare)"});
-    rect(svg, gx+barW,  yC, barW, P.t+innerH-yC, {fill:"var(--focal)"});
+    const cmpBar = rect(svg, gx,       yP, barW, P.t+innerH-yP, {fill:"var(--compare)"});
+    const curBar = rect(svg, gx+barW,  yC, barW, P.t+innerH-yC, {fill:"var(--focal)"});
     // Value labels above bars
     text(svg, gx+barW/2, yP-4, fmtShort(prvVals[i],isRate), {fill:"#707175","font-size":10,"text-anchor":"middle"});
     text(svg, gx+barW*1.5, yC-4, fmtShort(curVals[i],isRate), {fill:"#050507","font-size":10,"text-anchor":"middle","font-weight":700});
     text(svg, gx+groupW/2-7, P.t+innerH+16, lab, {fill:"#262626","font-size":11,"text-anchor":"middle"});
+
+    // Hover targets
+    if(curYr != null){
+      const valueStrFor = v => isRate ? v.toFixed(1) + " per 100k" : fmt(v);
+      const tipCur = e => tipShow(e, {
+        label: `${lab} · ${curYr} YTD${through ? " through "+through : ""}`,
+        value: curVals[i], valueStr: valueStrFor(curVals[i]),
+        cmp: { value: prvVals[i], valueStr: valueStrFor(prvVals[i]), label: `${cmpYr} YTD` }
+      });
+      const tipPrv = e => tipShow(e, {
+        label: `${lab} · ${cmpYr} YTD${through ? " through "+through : ""}`,
+        value: prvVals[i], valueStr: valueStrFor(prvVals[i]),
+        cmp: null
+      });
+      curBar.setAttribute("class","hot");
+      curBar.style.cursor = "pointer";
+      curBar.addEventListener("mouseenter", tipCur);
+      curBar.addEventListener("mousemove",  tipCur);
+      curBar.addEventListener("mouseleave", tipHide);
+      cmpBar.setAttribute("class","hot");
+      cmpBar.style.cursor = "pointer";
+      cmpBar.addEventListener("mouseenter", tipPrv);
+      cmpBar.addEventListener("mousemove",  tipPrv);
+      cmpBar.addEventListener("mouseleave", tipHide);
+    }
   });
 }
 function fmtShort(n, isRate){
