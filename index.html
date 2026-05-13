@@ -305,8 +305,9 @@ const pct = n => (n == null || !isFinite(n)) ? "—" : (n>=0?"+":"") + n.toFixed
 // Category/offense display-name map. Keys are the raw UPPERCASE values from the data.
 // Override anything here to get a clean, plain-English label.
 const DISPLAY_NAMES = {
-  // ── Criminal court summons categories (SUMMONS_CATEGORY_TYPE) ──
+  // ── Criminal court summons categories (SUMMONS_CATEGORY_TYPE + our overrides) ──
   "ALCOHOL":             "Alcohol",
+  "ALCOHOL + DRIVING":   "Alcohol + driving",
   "MARIJUANA":           "Marijuana",
   "TRESPASS":            "Trespass",
   "DISORDERLY CONDUCT":  "Disorderly conduct",
@@ -316,6 +317,9 @@ const DISPLAY_NAMES = {
   "PARKS":               "Parks rules",
   "TRANSIT":             "Transit rules",
   "OTHER TRANSIT REG":   "Other transit rules",
+  "BICYCLE":             "Bicycle",
+  "NOISE":               "Noise",
+  "VENDING":             "Vending",
   "HEALTH CODE":         "Health code",
   "HEALTHCODE":          "Health code",
   "LOITERING":           "Loitering",
@@ -324,6 +328,8 @@ const DISPLAY_NAMES = {
   "WEAPONS":             "Weapons",
   "DRUG":                "Drugs (non-marijuana)",
   "ASSAULT":             "Assault",
+  "NYS TRANS":           "NYS transportation",
+  "OTHER NYS TRANSPORTATION": "Other NYS transportation",
   "OTHER":               "Other",
 
   // ── OATH categories (LAW_TYPE) ──
