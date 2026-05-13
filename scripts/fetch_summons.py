@@ -171,6 +171,46 @@ def split_admin_code(category, offense):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Criminal Court Summons category overrides.
+# NYPD's SUMMONS_CATEGORY_TYPE field is inconsistent: e.g., "Other Transit Reg"
+# appears under category OTHER ABC (alcohol). We override by matching keywords in
+# the OFFENSE_DESCRIPTION field. Order matters - first match wins.
+# Only applied to criminal court summons (OATH and B summons categories are cleaner).
+# ──────────────────────────────────────────────────────────────────────────────
+CRIMINAL_CAT_OVERRIDES = [
+    # (target_category, [keyword fragments to match in offense description])
+    # Check ALCOHOL+DRIVING before ALCOHOL or VTL since it could match either
+    ("ALCOHOL + DRIVING", ["ALCOHOL IN VEHICLE", "CONSUMPTION OF ALCOHOL IN VEHICLE",
+                           "DRINKING IN VEHICLE", "OPEN CONTAINER IN VEHICLE"]),
+    # Transit-specific
+    ("TRANSIT", ["TRANSIT", "TRAIN STATION", "SUBWAY", "MTA RULE", "BUS RULE"]),
+    # Marijuana / cannabis
+    ("MARIJUANA", ["MARIJUANA", "MARIHUANA", "CANNABIS"]),
+    # Bicycle (not motorbike/motorcycle)
+    ("BICYCLE", ["BICYCLE", "BIKE ON SIDEWALK", "BIKE ON SIDEWAL"]),
+    # Noise
+    ("NOISE", ["NOISE", "UNREASONABLE NOISE"]),
+    # Vending
+    ("VENDING", ["VENDING", "VENDOR", "PEDDLE", "PEDDLER"]),
+    # Parks (note the trailing space on "PARK " to avoid matching "parking")
+    ("PARKS", ["PARK RULE", "PARKS RULE", "UNLEASHED", "AFTER HOURS IN PARK",
+               "GLASS IN PARK", "ALCOHOL IN PARK"]),
+    # Alcohol (general) - must come after ALCOHOL + DRIVING and PARKS
+    ("ALCOHOL", ["OPEN CONTAINER", "CONSUMPTION OF ALCOHOL", "PUBLIC INTOXICATION",
+                 "INTOXICATED", "LIQUOR LAW", "ALCOHOLIC BEVERAG"]),
+]
+
+def override_criminal_category(category, offense):
+    """For criminal court summons rows, possibly remap category based on offense text."""
+    off = (offense or "").upper()
+    for target, kws in CRIMINAL_CAT_OVERRIDES:
+        for kw in kws:
+            if kw in off:
+                return target
+    return category
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Socrata helpers
 # ──────────────────────────────────────────────────────────────────────────────
 def soda_get(dataset_id, params, retries=4):
@@ -279,6 +319,8 @@ def fetch_criminal_court():
             offense = (r.get("offense") or "").strip().upper()
             if offense in ("", "NULL", "(NULL)", "NONE"):
                 offense = "UNKNOWN"
+            # Override miscoded categories using offense-description keywords
+            cat = override_criminal_category(cat, offense)
             out.append({
                 "year": yr, "month": mo, "boro": boro, "precinct": pct,
                 "category": cat, "offense": offense, "n": n,
