@@ -222,9 +222,9 @@ def soda_get(dataset_id, params, retries=4):
     for attempt in range(retries):
         try:
             req = Request(url, headers=headers)
-            with urlopen(req, timeout=120) as resp:
+            with urlopen(req, timeout=300) as resp:
                 return json.loads(resp.read())
-        except (HTTPError, URLError) as e:
+        except (HTTPError, URLError, TimeoutError) as e:
             wait = 2 ** attempt
             print(f"  [retry {attempt+1}/{retries}] {e} — sleeping {wait}s", file=sys.stderr)
             time.sleep(wait)
